@@ -103,6 +103,137 @@ shopify-mcp --accessToken=<YOUR_ACCESS_TOKEN> --domain=<YOUR_SHOP>.myshopify.com
 
 **⚠️ Important:** If you see errors about "SHOPIFY_ACCESS_TOKEN environment variable is required" when using command-line arguments, you might have a different package installed. Make sure you're using `shopify-mcp`, not `shopify-mcp-server`.
 
+## HTTP Transport Mode (for n8n and Web Integrations)
+
+The server supports HTTP transport with Server-Sent Events (SSE) streaming, enabling integration with n8n and other HTTP-based MCP clients.
+
+### Running in HTTP Mode
+
+#### Using Command Line Arguments
+
+```bash
+npx shopify-mcp \
+  --transport=http \
+  --accessToken=<YOUR_ACCESS_TOKEN> \
+  --domain=<YOUR_SHOP>.myshopify.com \
+  --port=3000 \
+  --host=localhost
+```
+
+#### Using Environment Variables
+
+Create a `.env` file:
+
+```
+SHOPIFY_ACCESS_TOKEN=your_access_token
+MYSHOPIFY_DOMAIN=your-store.myshopify.com
+TRANSPORT_MODE=http
+PORT=3000
+HOST=localhost
+```
+
+Then run:
+
+```bash
+npx shopify-mcp
+```
+
+### HTTP Configuration Options
+
+| Option             | Environment Variable | Default     | Description                              |
+| ------------------ | -------------------- | ----------- | ---------------------------------------- |
+| `--transport`      | `TRANSPORT_MODE`     | `stdio`     | Transport mode: `stdio` or `http`        |
+| `--port`           | `PORT`               | `3000`      | HTTP server port                         |
+| `--host`           | `HOST`               | `localhost` | HTTP server host                         |
+| `--allowedOrigins` | `ALLOWED_ORIGINS`    | (none)      | Comma-separated allowed origins for CORS |
+
+### Testing HTTP Mode
+
+Once the server is running in HTTP mode, test it with curl:
+
+```bash
+# Health check
+curl http://localhost:3000/health
+
+# Initialize MCP session
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": {"name": "test-client", "version": "1.0"}
+    }
+  }'
+
+# Call a tool (get products)
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "get-products",
+      "arguments": {"limit": 5}
+    }
+  }'
+```
+
+### Using with n8n
+
+1. **Install/Configure n8n**: Ensure you have n8n installed and running
+
+2. **Add HTTP Request Node**: In your n8n workflow, add an HTTP Request node
+
+3. **Configure the Request**:
+
+   - **Method**: POST
+   - **URL**: `http://localhost:3000/mcp`
+   - **Headers**:
+     - `Content-Type`: `application/json`
+     - `Accept`: `application/json`
+   - **Body** (JSON):
+     ```json
+     {
+       "jsonrpc": "2.0",
+       "id": 1,
+       "method": "tools/call",
+       "params": {
+         "name": "get-products",
+         "arguments": {
+           "limit": 10
+         }
+       }
+     }
+     ```
+
+4. **Process the Response**: The MCP server will return tool results in the JSON-RPC response format
+
+### Security Considerations for HTTP Mode
+
+> **⚠️ Important Security Notes:**
+>
+> - By default, the server binds to `localhost` only, making it accessible only from the same machine
+> - For production use, configure `--allowedOrigins` to restrict which domains can access the server
+> - Consider using HTTPS/TLS termination with a reverse proxy (e.g., nginx) for production deployments
+> - Never expose the server directly to the internet without proper authentication
+
+Example with allowed origins:
+
+```bash
+npx shopify-mcp \
+  --transport=http \
+  --accessToken=<YOUR_TOKEN> \
+  --domain=<YOUR_SHOP>.myshopify.com \
+  --allowedOrigins=http://localhost:5678,https://your-n8n-instance.com
+```
+
 ## Available Tools
 
 ### Product Management
@@ -115,21 +246,23 @@ shopify-mcp --accessToken=<YOUR_ACCESS_TOKEN> --domain=<YOUR_SHOP>.myshopify.com
      - `limit` (number): Maximum number of products to return
 
 2. `get-product-by-id`
+
    - Get a specific product by ID
    - Inputs:
      - `productId` (string): ID of the product to retrieve
 
 3. `createProduct`
-    - Create new product in store 
-    - Inputs:
-        - `title` (string): Title of the product
-        - `descriptionHtml` (string): Description of the product
-        - `vendor` (string): Vendor of the product
-        - `productType` (string): Type of the product
-        - `tags` (string): Tags of the product
-        - `status` (string): Status of the product "ACTIVE", "DRAFT", "ARCHIVED". Default "DRAFT"
+   - Create new product in store
+   - Inputs:
+     - `title` (string): Title of the product
+     - `descriptionHtml` (string): Description of the product
+     - `vendor` (string): Vendor of the product
+     - `productType` (string): Type of the product
+     - `tags` (string): Tags of the product
+     - `status` (string): Status of the product "ACTIVE", "DRAFT", "ARCHIVED". Default "DRAFT"
 
 ### Customer Management
+
 1. `get-customers`
 
    - Get customers or search by name/email

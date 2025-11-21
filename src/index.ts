@@ -2,6 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createServer } from "http";
 import dotenv from "dotenv";
 import { GraphQLClient } from "graphql-request";
 import minimist from "minimist";
@@ -23,6 +25,16 @@ const argv = minimist(process.argv.slice(2));
 
 // Load environment variables from .env file (if it exists)
 dotenv.config();
+
+// Transport configuration
+const TRANSPORT_MODE = argv.transport || process.env.TRANSPORT_MODE || "stdio";
+const HTTP_PORT = parseInt(argv.port || process.env.PORT || "3000");
+const HTTP_HOST = argv.host || process.env.HOST || "localhost";
+const ALLOWED_ORIGINS = argv.allowedOrigins
+  ? argv.allowedOrigins.split(",")
+  : process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",")
+  : undefined;
 
 // Define environment variables - from command line or .env file
 const SHOPIFY_ACCESS_TOKEN =
@@ -270,11 +282,96 @@ server.tool(
   }
 );
 
-// Start the server
-const transport = new StdioServerTransport();
-server
-  .connect(transport)
-  .then(() => {})
-  .catch((error: unknown) => {
-    console.error("Failed to start Shopify MCP Server:", error);
+// Start the server with the appropriate transport
+if (TRANSPORT_MODE === "http") {
+  // HTTP mode with Streamable HTTP transport
+  console.error(`Starting MCP server in HTTP mode on ${HTTP_HOST}:${HTTP_PORT}`);
+
+  const httpServer = createServer(async (req, res) => {
+    const url = new URL(req.url || "/", `http://${req.headers.host}`);
+
+    // CORS headers
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Last-Event-ID");
+    res.setHeader("Access-Control-Expose-Headers", "X-Session-ID");
+
+    // Handle preflight requests
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Only handle /mcp endpoint
+    if (url.pathname === "/mcp") {
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless mode
+        enableJsonResponse: true, // Use JSON responses by default
+        allowedOrigins: ALLOWED_ORIGINS,
+        enableDnsRebindingProtection: !!ALLOWED_ORIGINS,
+      });
+
+      await server.connect(transport);
+
+      try {
+        await transport.handleRequest(req, res);
+      } catch (error) {
+        console.error("Error handling MCP request:", error);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Internal server error" }));
+        }
+      } finally {
+        // Close transport after handling the request
+        await transport.close();
+      }
+    } else if (url.pathname === "/health") {
+      // Health check endpoint
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", transport: "http" }));
+    } else {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+    }
   });
+
+  httpServer.listen(HTTP_PORT, HTTP_HOST, () => {
+    console.error(`MCP HTTP Server listening on http://${HTTP_HOST}:${HTTP_PORT}/mcp`);
+    console.error(`Health check available at http://${HTTP_HOST}:${HTTP_PORT}/health`);
+  });
+
+  // Graceful shutdown
+  let isShuttingDown = false;
+  const shutdown = () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.error("\nShutting down HTTP server...");
+    
+    // Force exit after 5 seconds if graceful shutdown fails
+    const forceExitTimer = setTimeout(() => {
+      console.error("Force closing server...");
+      process.exit(0);
+    }, 5000);
+
+    httpServer.close(() => {
+      clearTimeout(forceExitTimer);
+      console.error("HTTP server closed");
+      process.exit(0);
+    });
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+} else {
+  // Stdio mode (default) for Claude Desktop
+  console.error("Starting MCP server in stdio mode");
+  const transport = new StdioServerTransport();
+  server
+    .connect(transport)
+    .then(() => {})
+    .catch((error: unknown) => {
+      console.error("Failed to start Shopify MCP Server:", error);
+    });
+}
