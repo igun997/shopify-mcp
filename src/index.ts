@@ -287,6 +287,17 @@ if (TRANSPORT_MODE === "http") {
   // HTTP mode with Streamable HTTP transport
   console.error(`Starting MCP server in HTTP mode on ${HTTP_HOST}:${HTTP_PORT}`);
 
+  // Create transport once and reuse it
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // Stateless mode
+    enableJsonResponse: true, // Use JSON responses by default
+    allowedOrigins: ALLOWED_ORIGINS,
+    enableDnsRebindingProtection: !!ALLOWED_ORIGINS,
+  });
+
+  // Connect server to transport once
+  await server.connect(transport);
+
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
 
@@ -305,15 +316,6 @@ if (TRANSPORT_MODE === "http") {
 
     // Only handle /mcp endpoint
     if (url.pathname === "/mcp") {
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // Stateless mode
-        enableJsonResponse: true, // Use JSON responses by default
-        allowedOrigins: ALLOWED_ORIGINS,
-        enableDnsRebindingProtection: !!ALLOWED_ORIGINS,
-      });
-
-      await server.connect(transport);
-
       try {
         await transport.handleRequest(req, res);
       } catch (error) {
@@ -322,9 +324,6 @@ if (TRANSPORT_MODE === "http") {
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "Internal server error" }));
         }
-      } finally {
-        // Close transport after handling the request
-        await transport.close();
       }
     } else if (url.pathname === "/health") {
       // Health check endpoint
